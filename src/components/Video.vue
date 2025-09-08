@@ -1,15 +1,8 @@
 <template>
   <div class="p-6 flex flex-col space-y-4 bg-gray-100 min-h-screen">
-    <!-- 비디오 영역 -->
-    <div class="flex space-x-4 justify-center">
-      <video ref="localVideo" autoplay playsinline muted class="w-64 border rounded-lg bg-black"></video>
-      <video ref="remoteVideo" autoplay playsinline class="w-64 border rounded-lg bg-black"></video>
-    </div>
-
     <!-- 버튼 -->
     <div class="flex justify-center space-x-2">
-      <button @click="startCall" class="px-4 py-2 bg-blue-500 text-white rounded">📞 Call</button>
-      <button @click="shareScreen" class="px-4 py-2 bg-green-500 text-white rounded">🖥 화면공유</button>
+      <button @click="startCall" class="px-4 py-2 bg-blue-500 text-white rounded">📞 Connect</button>
       <button @click="hangup" class="px-4 py-2 bg-red-500 text-white rounded">❌ Hangup</button>
     </div>
 
@@ -46,14 +39,11 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from "vue"
 
-const localVideo = ref(null)
-const remoteVideo = ref(null)
-const chatBox = ref(null)
-
-let localStream, pc, ws, chatChannel, fileChannel
+let pc, ws, chatChannel, fileChannel
 const clientId = Math.random().toString(36).substring(2, 10)
 
 // 상태 관리
+const chatBox = ref(null)
 const messages = ref([])
 const chatInput = ref("")
 const receivedFiles = ref([])
@@ -88,22 +78,13 @@ function initWebSocket() {
         await pc.addIceCandidate(data.candidate)
       }
     } catch (err) {
-      console.error("❌ signaling 처리 오류:", err)
+      console.error("❌ signaling error:", err)
     }
   }
 }
 
 async function startCall() {
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-  localVideo.value.srcObject = localStream
-
   pc = new RTCPeerConnection()
-
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream))
-
-  pc.ontrack = (event) => {
-    remoteVideo.value.srcObject = event.streams[0]
-  }
 
   // DataChannel 생성 (Caller)
   chatChannel = pc.createDataChannel("chat")
@@ -179,25 +160,10 @@ function sendFile(event) {
   })
 }
 
-async function shareScreen() {
-  const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true })
-  const screenTrack = screenStream.getTracks()[0]
-  const sender = pc.getSenders().find(s => s.track.kind === "video")
-  sender.replaceTrack(screenTrack)
-
-  screenTrack.onended = () => {
-    sender.replaceTrack(localStream.getTracks().find(t => t.kind === "video"))
-  }
-}
-
 function hangup() {
   if (pc) {
     pc.close()
     pc = null
-  }
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop())
-    localStream = null
   }
 }
 </script>
