@@ -1,5 +1,5 @@
 import { createApp } from "vue"
 import "./style.css"
-import VideoChat from "./components/Video.vue"
+import App from "./App.vue"   // ✅ 이제 App.vue가 root 컴포넌트
 
-createApp(VideoChat).mount("#app")
+createApp(App).mount("#app")
