@@ -1,15 +1,17 @@
 <template>
   <div class="p-6 flex flex-col space-y-4 bg-gray-100 min-h-screen">
-    <!-- 버튼 -->
-    <div class="flex justify-center space-x-2">
-      <button @click="startCall" class="px-4 py-2 bg-blue-500 text-white rounded">📞 Connect</button>
-      <button @click="hangup" class="px-4 py-2 bg-red-500 text-white rounded">❌ Hangup</button>
+    <!-- 방 참여 -->
+    <div class="flex space-x-2 justify-center">
+      <input v-model="roomId" placeholder="Room ID 입력"
+             class="border px-2 py-1 rounded w-40"/>
+      <button @click="joinRoom" class="px-4 py-2 bg-blue-500 text-white rounded">🚪 Join Room</button>
     </div>
 
-    <div class="flex space-x-6 justify-center">
+    <!-- 채팅 & 파일 -->
+    <div class="flex space-x-6 justify-center" v-if="joined">
       <!-- 채팅 -->
       <div class="border p-3 rounded w-96 bg-white shadow">
-        <h3 class="font-bold mb-2">💬 Chat</h3>
+        <h3 class="font-bold mb-2">💬 Chat (Room: {{ roomId }})</h3>
         <div class="h-40 overflow-y-auto border p-2 mb-2 bg-gray-50" ref="chatBox">
           <div v-for="(msg, i) in messages" :key="i" class="text-sm">
             {{ msg }}
@@ -37,87 +39,98 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from "vue"
+import { ref } from "vue"
 
-let pc, ws, chatChannel, fileChannel
+let ws
+let peers = new Map()   // { clientId: RTCPeerConnection }
+let chatChannels = new Map()
+let fileChannels = new Map()
+
 const clientId = Math.random().toString(36).substring(2, 10)
+const roomId = ref("")
+const joined = ref(false)
 
-// 상태 관리
 const chatBox = ref(null)
 const messages = ref([])
 const chatInput = ref("")
 const receivedFiles = ref([])
 
-onMounted(() => {
-  initWebSocket()
-})
-
-onBeforeUnmount(() => {
-  if (ws) ws.close()
-  hangup()
-})
-
-function initWebSocket() {
+function joinRoom() {
   ws = new WebSocket("ws://localhost:3001")
 
-  ws.onopen = () => console.log("✅ WebSocket Connected")
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "join-room", roomId: roomId.value, sender: clientId }))
+    joined.value = true
+    console.log(`✅ Joined room ${roomId.value}`)
+  }
 
   ws.onmessage = async (event) => {
     const data = JSON.parse(event.data)
-    if (!pc || data.sender === clientId) return
+    if (data.sender === clientId) return
 
-    try {
-      if (data.type === "offer") {
-        await pc.setRemoteDescription(data)
-        const answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        ws.send(JSON.stringify({ ...answer, sender: clientId }))
-      } else if (data.type === "answer") {
-        await pc.setRemoteDescription(data)
-      } else if (data.type === "candidate" && data.candidate) {
-        await pc.addIceCandidate(data.candidate)
-      }
-    } catch (err) {
-      console.error("❌ signaling error:", err)
+    if (data.type === "new-peer") {
+      console.log("새 피어 발견:", data.sender)
+      connectToPeer(data.sender) // 오퍼 보내기
+    } else if (data.type === "offer") {
+      const pc = createPeer(data.sender)
+      await pc.setRemoteDescription(data)
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      ws.send(JSON.stringify({ ...answer, type: "answer", roomId: roomId.value, sender: clientId }))
+    } else if (data.type === "answer") {
+      await peers.get(data.sender)?.setRemoteDescription(data)
+    } else if (data.type === "candidate" && data.candidate) {
+      await peers.get(data.sender)?.addIceCandidate(data.candidate)
     }
   }
 }
 
-async function startCall() {
-  pc = new RTCPeerConnection()
+function createPeer(remoteId) {
+  const pc = new RTCPeerConnection()
+  peers.set(remoteId, pc)
 
-  // DataChannel 생성 (Caller)
-  chatChannel = pc.createDataChannel("chat")
-  fileChannel = pc.createDataChannel("file")
-
-  setupChatChannel(chatChannel)
-  setupFileChannel(fileChannel)
-
-  // DataChannel 수신 (Callee)
+  // 채널 수신
   pc.ondatachannel = (event) => {
     if (event.channel.label === "chat") {
-      chatChannel = event.channel
-      setupChatChannel(chatChannel)
-    }
-    if (event.channel.label === "file") {
-      fileChannel = event.channel
-      setupFileChannel(fileChannel)
+      chatChannels.set(remoteId, event.channel)
+      setupChatChannel(event.channel)
+    } else if (event.channel.label === "file") {
+      fileChannels.set(remoteId, event.channel)
+      setupFileChannel(event.channel)
     }
   }
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
-      ws.send(JSON.stringify({ type: "candidate", candidate: event.candidate, sender: clientId }))
+      ws.send(JSON.stringify({
+        type: "candidate",
+        candidate: event.candidate,
+        roomId: roomId.value,
+        sender: clientId
+      }))
     }
   }
 
+  return pc
+}
+
+async function connectToPeer(remoteId) {
+  const pc = createPeer(remoteId)
+  const chatChannel = pc.createDataChannel("chat")
+  const fileChannel = pc.createDataChannel("file")
+
+  chatChannels.set(remoteId, chatChannel)
+  fileChannels.set(remoteId, fileChannel)
+
+  setupChatChannel(chatChannel)
+  setupFileChannel(fileChannel)
+
   const offer = await pc.createOffer()
   await pc.setLocalDescription(offer)
-  ws.send(JSON.stringify({ ...offer, sender: clientId }))
+  ws.send(JSON.stringify({ ...offer, type: "offer", roomId: roomId.value, sender: clientId }))
 }
 
 function setupChatChannel(channel) {
-  channel.onopen = () => console.log("✅ Chat channel open")
   channel.onmessage = (e) => {
     messages.value.push(`상대방: ${e.data}`)
     setTimeout(() => {
@@ -144,26 +157,22 @@ function setupFileChannel(channel) {
 }
 
 function sendChat() {
-  if (chatInput.value && chatChannel?.readyState === "open") {
-    chatChannel.send(chatInput.value)
-    messages.value.push(`나: ${chatInput.value}`)
-    chatInput.value = ""
-  }
+  if (!chatInput.value) return
+  messages.value.push(`나: ${chatInput.value}`)
+  chatChannels.forEach((ch) => {
+    if (ch.readyState === "open") ch.send(chatInput.value)
+  })
+  chatInput.value = ""
 }
 
 function sendFile(event) {
   const file = event.target.files[0]
-  if (!file || !fileChannel) return
-  fileChannel.send(file.name)
-  file.arrayBuffer().then(buffer => {
-    fileChannel.send(buffer)
+  if (!file) return
+  fileChannels.forEach((ch) => {
+    if (ch.readyState === "open") {
+      ch.send(file.name)
+      file.arrayBuffer().then(buffer => ch.send(buffer))
+    }
   })
-}
-
-function hangup() {
-  if (pc) {
-    pc.close()
-    pc = null
-  }
 }
 </script>
